@@ -9,7 +9,7 @@ require Exporter;
 %EXPORT_TAGS = (':all' => [@EXPORT_OK, @EXPORT]);
 @ISA = qw(Exporter);
 
-$VERSION = 0.01;
+$VERSION = 0.02;
 
 sub BOTTOM () {			# the universal bad value
     if ($::DEBUG =~ /b/) {
@@ -24,7 +24,7 @@ sub bottom {			# check for bottom
 }
 
 sub numeric {			# check for 2 integer args
-    return ($_[0] =~ /^\d+$/) && ($_[1] =~ /^\d+$/);
+    return ($_[0] =~ /$RE{num}{real}/o) && ($_[1] =~ /$RE{num}{real}/o);
 }
 
 ######################################################################
@@ -66,42 +66,35 @@ sub to_array {
 
 sub call_it {			# look up a function
     my $f = shift;
-    if (ref $f ne 'CODE' && *{__PACKAGE__.'::'.$f}{CODE}) {
-	# Grab the function now if it's in our package, since we don't
-	# have an autoload to worry about.
-	Drun "call_it: $f is in ".__PACKAGE__;
-	$f = \&{__PACKAGE__.'::'.$f};
-    }
-    local @::args = @_;
-    local $::f = $f;
-    my @ret;
     Drun "Calling $f (@_)";
-    # Evaluate in their package to pick up the expected functions.
-    @ret = eval 'package '.pkg().";\n".'$::f->(@::args)';
-    die "$f: $@" if $@;
-    @ret;
+    $f->(@_);
+}
+
+sub findsym {		# look up a function
+    my ($sym, $type) = @_;
+    return $sym if ref $sym eq $type;
+    return *{__PACKAGE__.'::'.$sym}{$type} || *{pkg().'::'.$sym}{$type}
+	|| undef;
 }
 
 sub do_bu {			# bu (i.e. currying)
     my ($f, $o) = @_;
-    Dparse "do_bu($f, $o)";
+    Dparse "using $f($o, ...)";
     return sub {
 	no strict 'refs';
-	Drun "bu-application of $f to ($o, @_)";
+	Drun "bu $f ($o, @_)";
 	call_it($f, $o, @_);
-#	&{$f}($o, @_)
     };
 }
 
 sub compose {			# '.' operator
     my @funcs = @_;
-    Dparse "Creating compose @funcs";
+    Dparse "using (@funcs)";
     return sub {
 	no strict 'refs';
+	Drun "compose (@funcs)";
 	foreach (reverse @funcs) {
-	    Drun "applying $_ (@_)";
 	    @_ = call_it($_, @_);
-	    Drun "/applying $_ (@_)";
 	}
 	@_[0..$#_];
     };
@@ -109,6 +102,7 @@ sub compose {			# '.' operator
 
 sub distribute {		# '[...]' list-of-functions
     my @xs = @_;
+    Dparse "using (@xs)";
     return sub {
 	no strict 'refs';
 	Drun "distribute (@xs) : (@_)";
@@ -118,8 +112,10 @@ sub distribute {		# '[...]' list-of-functions
 
 sub ifelse {			# 'a -> b ; c' construct
     my ($if, $then, $else) = @_;
+    Dparse "if $if then $then else $else";
     return sub {
 	# XXX: having to call this in array context sucks, but is necessary.
+	Drun "if $if then $then else $else";
 	if ((call_it $if, @_)[0]) {
 	    call_it $then, @_;
 	} else {
@@ -130,7 +126,9 @@ sub ifelse {			# 'a -> b ; c' construct
 
 sub awhile {			# 'while x y'
     my ($while, $do) = @_;
+    Dparse "while ($while) $do";
     return sub {
+	Drun "while ($while) $do -> (@_)";
 	while ((call_it $while, @_)[0]) {
 	    @_ = call_it $do, @_;
 	}
@@ -140,6 +138,7 @@ sub awhile {			# 'while x y'
 
 sub forall {			# '@' operator, i.e. map
     my $f = shift;
+    Dparse "using $f";
     return sub {
 	no strict 'refs';
 	Drun "forall $f (@_)";
@@ -149,6 +148,7 @@ sub forall {			# '@' operator, i.e. map
 
 sub insert {			# '/' operator, i.e. reduce
     my $f = shift;
+    Dparse "using $f";
     return sub {
 	no strict 'refs';
 	Drun "insert $f (@_)";
@@ -163,7 +163,9 @@ sub insert {			# '/' operator, i.e. reduce
 
 sub constant {			# constant '`' operator
     my $x = shift;
+    Dparse $x;
     return sub {
+	Drun "constant $x";
 	as_array $x;
     };
 }
@@ -190,30 +192,32 @@ sub make_parser {
 		no strict 'refs';
 		foreach my $sym (qw|as_array Dparse Drun opfunc BOTTOM compose
 				    awhile forall ifelse do_bu distribute
-				    insert pkg to_array constant call_it|) {
+				    insert pkg to_array constant call_it
+				    findsym|) {
 			*{$sym} = *{'Language::FP::'.$sym};
 		}
 	}
 }
 
 
-thing:	  'val' <commit> id '=' application {
+thing:	  'val' <commit> id_undef '=' application {
 		no strict 'refs';
-		@{pkg().'::'.$item{id}} = as_array $item{application};
+		@{pkg().'::'.$item{id_undef}} = as_array $item{application};
 		Dparse "Defined variable $item{id}";
-		BOTTOM;
+		$return = 'ok';
 	}
 
-	| 'def' <commit> id '=' termlist {
+	| 'def' <commit> id_undef '=' termlist {
 		no strict 'refs';
-		*{pkg().'::'.$item{id}} = $item{termlist};
+		*{pkg().'::'.$item{id_undef}} = $item{termlist};
 		Dparse "Defined function $item{id}";
-		BOTTOM;
+		$return = 'ok';
 	}
 	| application
 		{ Dparse "Successful application $item[1]"; $return = $item[1] }
+	| <error>
 
-application: termlist ':' <commit> { Dparse "application:";1 } data {
+application: termlist ':' <commit> data {
 		no strict 'refs';
 		Dparse "application of $item[1]";
 		my @a = as_array $item{data};
@@ -222,27 +226,23 @@ application: termlist ':' <commit> { Dparse "application:";1 } data {
 	| data
 		{ $return = $item{data} }
 
-termlist: 'while' <commit> func termlist
-		{ $return = awhile $item{func}, $item{termlist} }
-	| complist '->' <commit> complist ';' complist
-		{ $return = ifelse @item[1,4,6] }
+termlist: 'while' <commit> complist termlist
+		{ $return = awhile $item{complist}, $item{termlist} }
+ 	| complist '->' <commit> complist ';' termlist
+ 		{ $return = ifelse @item[1,4,6] }
 	| complist 
 		{ $return = $item[1] }
+	| <error>
 
 complist: <rightop: func '.' func>
 		{ $return = compose @{$item[1]} }
 
 func:	  'bu' <commit> func data
 		{ $return = do_bu @item{'func', 'data'} }
-	| '/' func {
-		my ($f) = $item{func};
-		Dparse "reduce with $f";
-		$return = insert $f;
-	}
-	| '@' <commit> func {
-		my ($f) = $item{func};
-		$return = forall $f;
-	}
+	| '/' func
+		{ $return = insert $item{func} }
+	| '@' <commit> func
+		{ $return = forall $item{func};	}
 	| '(' <commit> termlist ')'
 		{ $return = $item{termlist} }
 	| '[' <commit> <rightop: termlist ',' termlist> ']'
@@ -253,31 +253,36 @@ func:	  'bu' <commit> func data
  		{ $return = $item[1] }
 	| id
 		{ $return = $item[1] }
-
+	| <error>
 
 data:	  '<' <commit> data(s?) '>'
 		{ $return = $item[3]; }
-	| /$RE{num}{int}/o
-		{ $return = $item[1] }
 	| /$RE{num}{real}/o
+		{ $return = $item[1] }
+ 	| /$RE{num}{int}/o
 		{ $return = $item[1] }
 	| /$RE{quoted}/o
 		{ $return = substr($item[1], 1, length($item[1]) - 2) }
-	| m{[a-rt-zA-Z_][\w\d]*} {
+	| m{[a-rt-zA-Z_][\w\d]*}
+	  <error?: Undefined variable "$item[1]"> <commit> {
 		no strict 'refs';
-		Dparse "Found value $item[1]";
-		$return = to_array(@{pkg().'::'.$item[1]});
+		$return = findsym($item[1], 'ARRAY') || undef;
 	}
+	| <error>
 
 sfunc:	  /\d+/ {
-#		my ($x) = ($item[1] =~ /s(-?\d+)/);
 		my $x = $item[1];
  		$return = sub { $_[$x - 1] };
 	}
 
-id:	  m{[a-zA-Z_][\w\d]*}
+id_undef:  m{[a-zA-Z_][\w\d]*}
 		{ $return = $item[1] }
-	| m{[+*/<>-] | ([<>=]=) | ([gln]e) | ([gl]t) | eq }x
+
+id:	  m{[a-zA-Z_][\w\d]*}
+	  <error?: Undefined function "$item[1]"> <commit>
+		{ $return = findsym($item[1], 'CODE') }
+	| m{([!<>=]=) | [+*/<>-] | ([gln]e) | ([gl]t) | eq}x
+	  <error?: Undefined operator "$item[1]">
 		{ $return = opfunc($item[1]) }
 
 EOG
@@ -374,12 +379,16 @@ trans 	=> q{
 sub perl2fp {
     my @ret;
     foreach (@_) {
-	if (ref) {
+	if (ref eq 'ARRAY') {
 	    push @ret, '<'.perl2fp(@$_).'>';
+	} elsif (ref) {
+	    die "Expecting ARRAY, got ".ref;
 	} elsif (/$RE{num}{int}/o || /$RE{num}{real}/o) {
 	    push @ret, $_;
-	} else {
+	} elsif (defined) {
 	    push @ret, qq{"$_"};
+	} else {
+	    push @ret, '_|_';
 	}
     }
     join(' ', @ret);
