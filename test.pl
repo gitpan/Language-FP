@@ -5,7 +5,7 @@
 
 # change 'tests => 1' to 'tests => last_test_to_print';
 
-use Test::Simple tests => 32;
+use Test::Simple tests => 63;
 use Language::FP qw/perl2fp fp_eval/;
 use strict;
 ok(1); # If we made it this far, we're ok (1)
@@ -15,6 +15,9 @@ my ($str, $res);
 sub fp($) {
     perl2fp(fp_eval shift);
 }
+
+sub alltests {
+
 ######################################################################
 # Miscellaneous (8)
 
@@ -78,3 +81,10 @@ ok(fp '==:<2 2>' eq '<1>');
 ok(fp '!=:<2 2>' eq '<"">');
 ok(fp '@(bu >=1):<0 1 2 3>' eq '<1 1 "" "">');
 ok(fp 'bu <=1:1' eq '<1>');
+
+}
+
+$::FP_DEBUG = '';		# default evaluator
+alltests;
+$::FP_DEBUG = 'C';		# closure evaluator
+alltests;

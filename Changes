@@ -12,3 +12,8 @@ Revision history for Perl extension Language::FP.
 	- changed if-then, while to no longer require parens
 	- better error messages.
 	- bind symbols (or fail) at parse time.
+
+0.03  Sat Jun  1 21:23:19 PDT 2002
+	- separated parser from compiler.
+	- new "Big Heinous Eval" compiler (see code).  Much faster.
+	- delayed most initialization.
